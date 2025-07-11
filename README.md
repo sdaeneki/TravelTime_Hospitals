@@ -10,7 +10,7 @@ If you use this repository or any of the code/materials, please cite the referen
 
 ## a. Code
 
-This folder contains all scripts necessary to prepare the data and reproduce the visualizations.
+This folder contains the scripts necessary to prepare the data and reproduce the visualizations.
 
 - **`1. Preprocessing.qmd`** to prepare the input data and calculate the travel times.
 - **`2. Visualization.qmd`** suffices to reproduce all final figures (located in the `/d. Output` folder). You do not need to run the other script unless you want to replicate the full data processing (the estimation of the travel times takes a looooooooooong time).
@@ -37,10 +37,10 @@ This folder contains all scripts necessary to prepare the data and reproduce the
 
 Contains intermediate data produced during preprocessing.
 
-- **`Batches/`**: calculated travel times.  
-- **`Isochrones/`**: isochrone polygons (15-minute accessibility).  
-- **`Sites/`**: locations of hospitals and statistical sector centroids.  
-- **`Geocoded_hospitals.csv`**: geocoded addresses of hospital campuses.  
+- **`Batches/`**: the calculated travel times.  
+- **`Isochrones/`**: the isochrone polygons (15-minute accessibility).  
+- **`Sites/`**: locations of the hospitals and of the statistical sector centroids.  
+- **`Geocoded_hospitals.csv`**: geocoded addresses of the hospital campuses.  
 - **`Inkomengegevens_per_StatS.csv`** & **`Leeftijdgegevens_per_StatS.csv`**: income and age data per statistical sector.  
 - **`Batch_info_Rank1.xlsx`** to **`Batch_info_Rank5.xlsx`**: hospital–centroid matrix      
   - E.g., `Batch_info_Rank1.xlsx` contains for each statistical sector the closest hospital, `Batch_info_Rank2.xlsx` the second closest, etc.  
@@ -60,7 +60,7 @@ The required files include:
 - `TF_CENSUS_2021_S01.xlsx`: census data (age)  
 - `TF_PSNL_INC_TAX_SECTOR (1).xlsx`: income data per statistical sector  
 
-> To reproduce the visualizations only, you will only need the shapefile and `2. Visualization.qmd`.  
+> To reproduce the visualizations only, you only need the shapefile and `2. Visualization.qmd`.  
 > For full replication, download all source files as instructed in the script 1.
 
 ---
