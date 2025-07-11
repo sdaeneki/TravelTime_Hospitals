@@ -1,0 +1,405 @@
+---
+title: "Hospitals - Belgium - Preprocessing"
+editor: source
+date: '`r paste("Update ", Sys.Date())`'
+author: "Stijn Daenekindt"
+editor_options:
+  chunk_output_type: console
+format:
+  html:
+    page-layout: full
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    toc-expand: true
+    code-fold: true
+    code-overflow: wrap
+    code-tools: true
+    theme: spacelab
+    fontsize: smaller
+    code-summary: "Code bekijken"
+    code:
+      options: hide  # Hide code in all code chunks
+    embed-resources: true
+---
+
+
+# -Download Instructions-
+
+To run the scripts in this repository, you need to manually download a number of input files. These files are not included in the /c. Source folder in the repo due to potential distribution restrictions, but they are publicly available or obtainable via request.
+Below are the required files and how to obtain them:
+
+### a. Hospital addresses  
+**Required file:**  
+../Source/12_2024_Adressenlijst AZ en PZ_Liste d'adresses HG et HP.xls
+**How to obtain:**  
+An overview of all hospitals in Belgium is available on the website of the Federal Public Service Health:  
+https://www.health.belgium.be/nl/gezondheid/organisatie-van-de-gezondheidszorg/delen-van-gezondheidsgegevens/gezondheidszorginstellingen
+To obtain the Excel file with hospital addresses, you can send a friendly request by e-mail to the contact address listed on the page.
+
+
+### b. Age and population data per statistical sector  
+**Required file:**  
+../Source/TF_CENSUS_2021_S01.xlsx
+**How to obtain:**  
+Available as open data on Statbel’s website:  
+https://statbel.fgov.be/nl/open-data/census-2021-bevolking-naar-statistische-sector-van-de-verblijfplaats-geslacht-en-leeftijd
+
+### c. Income data per statistical sector  
+**Required file:**  
+../Source/TF_PSNL_INC_TAX_SECTOR (1).xlsx
+**How to obtain:**  
+Also available on Statbel as open data:  
+https://statbel.fgov.be/nl/open-data/fiscale-statistiek-van-de-inkomsten-sector
+
+### d. Shapefile of statistical sectors (2024 version)  
+**Required file:**  
+../Source/sh_statbel_statistical_sectors_3812_20240101.shp (and associated files: .shx, .dbf, etc.)
+**How to obtain:**  
+Download the shapefile package from Statbel here:  
+https://statbel.fgov.be/nl/open-data/statistische-sectoren-2024
+
+
+Please ensure that all downloaded files are placed in the /c. Source folder so that the scripts can run correctly.
+
+
+
+
+
+# 0. Setup
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+knitr::opts_chunk$set(echo = TRUE) #hier aanpassen om de code mee te geven
+```
+
+Parameters for the Here API
+```{r}
+library("hereR")
+APIkey<-"" #put your API KEY here -- see hereR documentation)
+set_key(APIkey)
+```
+
+```{r, eval=FALSE}
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+```
+
+```{r}
+library("janitor")
+library('tidyverse')
+library("readxl")
+library("openxlsx")
+library("sf")
+library("tidygeocoder")
+```
+
+
+
+# 1. Preprocessing
+
+## 1.1. Hospitals
+
+I only keep hospital campuses that have an emergency ('eerste_opvang_van_spoedgevallen' or 'gespecialiseerde_spoedgevallenzorg'). In this way, we also remove other types of hospitals, such as psychiatric hospitals.
+
+First we need to clean the input file with the campuses, and then geocode it. The resulting file is available in Geocoded_hospitals.csv.
+
+```{r, eval=FALSE}
+# Clean the inputfile for our purpose
+ziekenhuizen<-read_excel("../Source/12_2024_Adressenlijst AZ en PZ_Liste d'adresses HG et HP.xls") %>% #get the file from the url from above
+  clean_names() %>%
+  slice(-1:-3) %>%
+  drop_na(ziekenhuis) %>%
+  filter(eerste_opvang_van_spoedgevallen=="X" | gespecialiseerde_spoedgevallenzorg == "X") %>%
+  mutate(soort_ziekenhuis=tolower(soort_ziekenhuis)) %>%
+  mutate(volledig_adres = paste(adres, post, gemeente, sep = ", ")) %>%
+  # A few adresses needed manual cleanen for the geocoding
+  mutate(volledig_adres = ifelse(volledig_adres=="AVENUE ALBERT 1IER 185, 5000, NAMUR",
+                                 "AVENUE ALBERT 1 185, 5000, NAMUR", volledig_adres)) %>%
+  mutate(volledig_adres = ifelse(volledig_adres=="AVENUE DR. G.THERASSE 1, 5530, MONT-GODINNE",
+                                 "GASTON THERASSE 1, 5530 MONT-GODINNE", volledig_adres)) %>%
+  mutate(volledig_adres = ifelse(volledig_adres=="PLACE A. VAN GEHUCHTEN 4, 1020, BRUXELLES (LAEKEN)",
+                                 "ARTHUR VAN GEHUCHTENPLEIN 4, BRUXELLES (LAEKEN)", volledig_adres)) %>%
+    mutate(volledig_adres = ifelse(volledig_adres=="AVENUE J.J. CROCQ 15, 1020, BRUXELLES (LAEKEN)",
+                                   "Jean Joseph Crocqlaan 15, 1020, BRUXELLES", volledig_adres)) %>%
+    mutate(volledig_adres = ifelse(volledig_adres=="AVENUE J.J. CROCQ 15, 1020, BRUXELLES (LAEKEN)",
+                                   "Jean Joseph Crocqlaan 15, 1020, BRUXELLES", volledig_adres)) %>%
+    mutate(volledig_adres = ifelse(volledig_adres=="BOULEVARD DU PATIENCE ET BEAUJONC 2, 4000, LIEGE",
+                                   "Boulevard Patience et Beaujonc 2, 4000 Luik", volledig_adres)) %>%
+    mutate(volledig_adres = ifelse(volledig_adres=="BOULEVARD DU PATIENCE ET BEAUJONC 2, 4000, LIEGE",
+                                   "Boulevard Patience et Beaujonc 2, 4000 Luik", volledig_adres)) %>%
+    mutate(volledig_adres = ifelse(volledig_adres=="AV. B. DE CONSTANTINOPLE 5, 7000, MONS",
+                                   "Av. Baudouin de Constantinople 5, 7000 Mons", volledig_adres)) %>%
+    mutate(volledig_adres = ifelse(volledig_adres=="AVENUE DE L'HOPITAL 1, 4000, LIEGE-1 (SART-TILMAN)",
+                                   "Avenue de l'Hôpital 1/1, 4000 Luik", volledig_adres)) %>%
+    mutate(volledig_adres = ifelse(volledig_adres=="BD. J. GRAINDOR 66, 1070, BRUXELLES (ANDERLECHT)",
+                                   "Jules Graindorlaan 66, 1070 Anderlecht", volledig_adres))
+
+# Geocode all the campuses
+ziekenhuizen<-ziekenhuizen %>%
+  tidygeocoder::geocode(address = volledig_adres, method = "osm", full_results = FALSE) %>%
+  # For this one campus, the geocoding did not work. I do it manually (looked up the coordinates online)
+  mutate(lat= ifelse(volledig_adres == "CHAUSSE DE BRUXELLES 140, 6042, LODELINSART", 50.43129486078203, lat)) %>%
+  mutate(long= ifelse(volledig_adres == "CHAUSSE DE BRUXELLES 140, 6042, LODELINSART", 4.440282935119576, long))
+
+# Write it to a csv to be able to skip the previous code
+write_csv(ziekenhuizen, path = "../Preprocessed//Geocoded_hospitals.csv")
+
+# Write the location of the hospitals to a gpkg file
+hospitals_sites <- st_as_sf(ziekenhuizen, coords = c("long", "lat"),
+                  crs = 4326, agr = "constant")
+st_write(hospitals_sites, "../Preprocessed//Sites/hospitals_sites.gpkg", driver = "GPKG") 
+
+```
+
+```{r}
+ziekenhuizen<-read.csv("../Preprocessed/Geocoded_hospitals.csv", sep=",")%>% 
+  select(ziekenhuis, volledig_adres, lat, long ) %>% 
+  rename(ziekenhuis_naam=ziekenhuis) %>% 
+  mutate(ziekenhuis = paste0(ziekenhuis_naam, " -- ", volledig_adres),)
+```
+
+
+## 1.2. Socio-demographic info per statistical sector
+
+
+### income
+
+```{r, eval=FALSE}
+ink<-read_xlsx("../Source/TF_PSNL_INC_TAX_SECTOR (1).xlsx", skip=0) %>% #get the file from the url from above
+  clean_names() %>%
+  filter(cd_year==2021) %>%
+  select(cd_sector,
+         tx_sector_descr_nl,
+         ms_avg_tot_net_taxable_inc,
+         ms_median_net_taxable_inc) %>%
+  filter(!grepl( 'niet te lokaliseren', tx_sector_descr_nl, ignore.case = TRUE))
+
+write_csv(ink, path = "../Preprocessed/Inkomengegevens_per_StatS.csv")
+```
+
+
+### age
+
+```{r, eval=FALSE}
+age <- read_xlsx("../Source/TF_CENSUS_2021_S01.xlsx", skip=0) %>% #get the file from the url from above
+  clean_names() %>%
+  mutate(
+    lft_cat = case_when(
+      cd_age %in% c("65-69", "70-74", "75-79", "80-84",
+                    "85-89", "90-94", "95-99", "100+") ~ "65+",
+      TRUE ~ "rest"
+    )
+  ) %>%
+  group_by(cd_sector, lft_cat) %>%
+  summarise(aantal=sum(ms_pop)) %>%
+  ungroup() %>%
+  pivot_wider(., values_from = 'aantal', names_from = 'lft_cat') %>%
+  clean_names() %>%
+  rowwise() %>%
+  mutate(x65=ifelse(is.na(x65), 0, x65)) %>%
+  mutate(prop_65plussers=(x65/(rest+x65)*100))
+
+write_csv(age, path = "../Preprocessed/Leeftijdgegevens_per_StatS.csv")
+```
+
+
+## 1.3. Shape file
+
+The shp file is available at https://statbel.fgov.be/nl/open-data/statistische-sectoren-2024
+
+```{r, eval=FALSE}
+shpfile <- "../Source/sh_statbel_statistical_sectors_3812_20240101.shp/sh_statbel_statistical_sectors_3812_20240101.shp/sh_statbel_statistical_sectors_3812_20240101.shp"  #get the file from the url from above
+emptymap <- st_read(dsn = shpfile) 
+emptymap<-emptymap %>% 
+  clean_names() %>% 
+  rename(cd_sector=cs01012024)
+```
+
+For every statistical sector, we calculate the centroid (from this centroid, we will calculate the travel time to the hospital campuses)
+```{r, eval=FALSE}
+centroids_sites <- st_centroid(emptymap) %>% 
+  select(cd_sector, t_sec_nl, geometry )
+centroids_sites <- st_as_sf(centroids_sites, crs = st_crs(emptymap))
+
+st_write(centroids_sites, "../Preprocessed/Sites/centroids_sites.gpkg", driver = "GPKG") # Opslaan in een GeoPackage-formaat
+```
+
+
+
+# 2. Estimate travel times
+
+We take two approaches.
+1) We estimate isochrones. These will indicate a geographic region from which a location can be arrived at within a certain time interval. In our case, we take 15 minutes by car, and estimate this for every campus.
+
+2) We look at the time needed to travel from each statistical sector to a hospital campus. There are 124 number of campuses in included in our analysis, and about 20,000 statistical sector. So, that it too much to calculate. To make it feasible, we apply the following approach:
+- For statistical sector, we look at the closest hospital campuses in terms of distance as the crow flies. 
+- For the 5 closest campuses for each statistical sector, we then calculate the needed travel time. 
+- From those calculated travel times, we then take the lowest travel time. In this way, we get a robust estimate of the lowest needed travel time to arrive at a hospital from each statistical sector. 
+
+## 2.1. Isochrones
+
+```{r, eval=FALSE}
+tijd<-as.POSIXct(strptime("2025-10-11 10:00:00", "%Y-%m-%d %H:%M:%S"))
+pois <- st_as_sf(ziekenhuizen, coords = c("long", "lat"), crs = 4326)
+isolijnen<-isoline(pois, datetime = tijd,range_type = "time", range=900, transport_mode = "car", optimize = "quality", arrival=T, aggregate = T)
+st_write(isolijnen, "../Preprocessed/Isochrones/isochrones_900.shp")
+```
+
+
+## 2.2. Travel time matrix
+
+```{r, eval=FALSE}
+#make sure crs are the same
+hospitals_sites <- st_transform(hospitals_sites, crs = 4326)
+centroids_sites <- st_transform(centroids_sites, crs = 4326)
+st_crs(hospitals_sites)==st_crs(centroids_sites)
+```
+
+
+### 2.2.1. Prepare batches for travel time matrix
+
+First, calculate the distance for every pair, and only keep (per statistical sector) the five closest
+```{r, eval=FALSE}
+# Step 1: Create all combination of centroids and hospitals
+combinations <- expand.grid(
+  centroid = centroids_sites$cd_sector,
+  ziekenhuis = paste0(hospitals_sites$ziekenhuis_naam, " -- ", hospitals_sites$volledig_adres),
+  stringsAsFactors = FALSE
+)
+
+# Step 2: Too much combinations, so we calculate distance (crows distance) and filter on that
+centroid_geom <- centroids_sites$geom
+ziekenhuis_geom <- hospitals_sites$geom
+distance_matrix <- st_distance(centroid_geom, ziekenhuis_geom)
+
+# Step 3: Add distances to combinations dataset
+combinations$afstand <- distance_matrix[cbind(
+  as.integer(factor(combinations$centroid, levels = centroids_sites$cd_sector)),
+  as.integer(factor(combinations$ziekenhuis, levels = hospitals_sites$ziekenhuis))
+)]
+
+# Step 4: filter on the five closest campuses
+ranked_data <- combinations %>%
+  group_by(centroid) %>%
+  arrange(afstand) %>%
+  mutate(rank = row_number()) %>% # Create rank variable per centroid
+  filter(rank <= 5) %>% # Only keep the 5 closest one
+  ungroup() %>%
+  mutate(selectie=1)
+```
+
+
+For each 'rank', create an overview file. Using those overview file (per rank), we will request info from the api in batches (per batch 499 combinations of campusen and statistical sectors).
+
+```{r, eval=FALSE}
+# Step 1: Split the data based on rank
+rank_list <- split(ranked_data, ranked_data$rank)
+
+# Stap 2: combine each subset with 'combinations'
+combinations_list <- lapply(rank_list, function(rank_data) {
+  combinations %>%
+    left_join(., rank_data, by = c('centroid', 'ziekenhuis', 'afstand')) %>%
+    drop_na(selectie) %>%
+    select(-c(selectie))
+})
+
+# Stap 3: Create batches to make execution feasible
+batch_size <- 499
+# Add batch-column
+combinations_list <- lapply(combinations_list, function(df) {
+  df %>%
+    mutate(batch = rep(1:ceiling(nrow(df) / batch_size), each = batch_size, length.out = nrow(df)))
+})
+
+# Step 4: Assign names
+names(combinations_list) <- paste0("combinations_", seq_along(combinations_list))
+
+# Step 5: Export
+write.xlsx(combinations_list$combinations_1, "../Preprocessed/Batch_info_Rank1.xlsx", rowNames = FALSE)
+write.xlsx(combinations_list$combinations_2, "../Preprocessed/Batch_info_Rank2.xlsx", rowNames = FALSE)
+write.xlsx(combinations_list$combinations_3, "../Preprocessed/Batch_info_Rank3.xlsx", rowNames = FALSE)
+write.xlsx(combinations_list$combinations_4, "../Preprocessed/Batch_info_Rank4.xlsx", rowNames = FALSE)
+write.xlsx(combinations_list$combinations_5, "../Preprocessed/Batch_info_Rank5.xlsx", rowNames = FALSE)
+
+```
+
+
+### 2.2.2. Estmate batches
+
+Using the exported batch files, we request info from the Here api.
+Here is the code to calculate the travel times for the batches in rank 1.
+Adjust the code based on your API key
+
+```{r, eval=FALSE}
+# focus on the rank of the batches, and check which batch was last executed.
+
+combinations<-read.xlsx("../Preprocessed/Batch_info_Rank1.xlsx")
+
+last_batch <- tryCatch( #check the the last calculated batch in that rank, add 1. That is the batch that should be calculated next
+  {
+    max(
+      as.numeric(gsub(".*_(\\d+)\\.csv$", "\\1", list.files("..\\Preprocessed\\Batches\\Rank 1\\", pattern = "_\\d+\\.csv$", full.names = TRUE))),
+      na.rm = TRUE
+    )
+  },
+  error = function(e) 0,
+  warning = function(w) 0
+)
+
+selected_batch_number <- last_batch+1
+selected_batch <- combinations[combinations$batch == selected_batch_number, ]
+
+```
+
+Create a function to calculate the travel times of all combinations in selected_batch
+```{r, eval=FALSE}
+
+# Batch route calculation functie
+batch_route_calculation <- function(batch_combinations) {
+  result <- list()
+
+  # Loop over de combinaties in de geselecteerde batch
+  for (comb in 1:nrow(batch_combinations)) {
+    # Haal de naam van de centroid en het ziekenhuisadres op uit de huidige combinatie
+    centroid_name <- batch_combinations$centroid[comb]  # Naam van de centroid
+    ziekenhuis_full_string <- batch_combinations$ziekenhuis[comb]  # Volledige ziekenhuis string (naam + adres)
+
+    # Zoek de bijbehorende rijen op basis van de naam van het ziekenhuis en de centroid
+    centroid <- centroids_sites[centroids_sites$cd_sector == centroid_name, ]
+    ziekenhuis <- hospitals_sites[hospitals_sites$ziekenhuis == ziekenhuis_full_string, ]
+
+    # Bereken de route
+    tt <- route(
+      origin = centroid,
+      destination = ziekenhuis,
+      datetime = tijd,
+      transport_mode = "car"
+    )
+
+    # Voeg de resultaten toe aan de lijst
+    result <- append(result, list(
+      data.frame(
+        origin = centroid_name,  # Gebruik de naam van de centroid
+        destination = ziekenhuis,  # Gebruik de naam van het ziekenhuis
+        tt %>% as_tibble()  # Zet de routegegevens om naar een tibble
+      )
+    ))
+  }
+
+  return(result)
+}
+```
+
+Run the function and export the data
+```{r, eval=FALSE}
+route_results_selected_batch <- batch_route_calculation(selected_batch)
+route_results_selected_batch_df <- bind_rows(route_results_selected_batch)
+route_results_selected_batch_df<-route_results_selected_batch_df %>%
+  select(-c(geometry))
+
+write_csv(route_results_selected_batch_df, path = paste0("../Preprocessed/Batches/Rank ", unique(combinations$rank), "/Batch_", selected_batch_number,".csv"))
+```
+
+
+
+

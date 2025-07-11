@@ -1,0 +1,624 @@
+---
+title: "Hospitals - Belgium"
+editor: source
+date: '`r paste("Update ", Sys.Date())`'
+author: "Stijn Daenekindt"
+editor_options:
+  chunk_output_type: console
+format:
+  html:
+    page-layout: full
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    toc-expand: true
+    code-fold: true
+    code-overflow: wrap
+    code-tools: true
+    theme: spacelab
+    fontsize: smaller
+    code-summary: "Code bekijken"
+    code:
+      options: hide 
+    embed-resources: true
+---
+
+
+# 0. Setup
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+knitr::opts_chunk$set(echo = TRUE) 
+```
+
+```{r, eval=FALSE}
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+```
+
+```{r}
+pacman::p_load(
+  janitor, tidyverse, readxl, ggthemes, openxlsx, viridis,  
+  ggrepel, MetBrewer, patchwork, sf, tidygeocoder,  
+  ggridges, ggdist, hrbrthemes, ggtext, ggsflabel
+)
+```
+
+
+# 1. Import data
+
+## 1.1. Hospitals
+
+```{r}
+#Import  in the geocodes hospitals
+ziekenhuizen<-read.csv("../Preprocessed/Geocoded_hospitals.csv", sep=",")%>% 
+  select(ziekenhuis, volledig_adres, lat, long ) %>% 
+  rename(ziekenhuis_naam=ziekenhuis) %>% 
+  mutate(ziekenhuis = paste0(ziekenhuis_naam, " -- ", volledig_adres),)
+
+hospitals_sites <- st_read("../Preprocessed/Sites/hospitals_sites.gpkg")
+```
+
+
+## 1.2. Socio-demographic info per statistical sector
+
+```{r}
+# Import data on income
+ink<-read.csv("../Preprocessed/Inkomengegevens_per_StatS.csv", sep = ",") %>% 
+  mutate(ms_median_net_taxable_inc=ms_median_net_taxable_inc) %>% 
+    drop_na(ms_median_net_taxable_inc)
+```
+
+```{r}
+#Import data on age
+age<-read.csv("../Preprocessed/Leeftijdgegevens_per_StatS.csv", sep = ",") %>% 
+  drop_na(prop_65plussers) %>% 
+  mutate(totaal=x65+rest)
+```
+
+```{r}
+# Combine the data on incomen and on age
+ses<-ink %>% 
+  full_join(., age, by='cd_sector') 
+ses<-ses %>% 
+  drop_na(prop_65plussers, # proportion of people age 65+ 
+          totaal, # total number of inhabitants
+          ms_median_net_taxable_inc) # median net taxable income
+```
+
+
+## 1.3. Shape file
+
+The shp file is available at https://statbel.fgov.be/nl/open-data/statistische-sectoren-2024
+```{r}
+shpfile <- "../Source/sh_statbel_statistical_sectors_3812_20240101.shp/sh_statbel_statistical_sectors_3812_20240101.shp/sh_statbel_statistical_sectors_3812_20240101.shp"  
+emptymap <- st_read(dsn = shpfile) 
+emptymap<-emptymap %>% 
+  clean_names() %>% 
+  rename(cd_sector=cs01012024)
+```
+
+To add a accent in the visualisations for provincies, I group per province
+```{r}
+emptymap_prov<-emptymap %>% 
+  group_by(t_provi_nl) %>% 
+  dplyr::summarize(geometry = st_union(geometry))
+```
+
+Create a mapping for the different regions in Belgium
+```{r}
+regios<-emptymap %>% 
+  select(cd_sector, t_regio_nl, t_provi_nl) %>% 
+  st_drop_geometry() 
+```
+
+Area of the statistical sectors
+```{r}
+oppervlakte<-emptymap %>% 
+  select(cd_sector, 
+         m_area_ha)%>% #Area of the statistical sectors in hectares
+  st_drop_geometry() 
+```
+
+Centroids from every statistical sector
+```{r}
+centroids_sites <- st_read("../Preprocessed/Sites/centroids_sites.gpkg")
+```
+
+Double check if the crs of both sets of sites are equal
+```{r}
+hospitals_sites <- st_transform(hospitals_sites, crs = 4326)
+centroids_sites <- st_transform(centroids_sites, crs = 4326)
+
+crs_equal <- st_crs(hospitals_sites) == st_crs(centroids_sites)
+crs_equal
+```
+
+
+# 2. Travel times
+
+Isolines for all hopitals, for 900 seconds
+```{r}
+isolijnen_900 <- st_read("../Preprocessed/Isochrones/isochrones_900.shp")
+```
+
+
+For each statistical sector, we have multiple travel times (for each rank). Per statistical sector, we take the smallest travel time (i.e., the fastest time to arrive at a campus (not necessarily the closest one) from each sector) 
+
+```{r}
+# Step 1: identify all csvs with calculated travel times
+csv_files <- list.files(
+  path = "../Preprocessed/Batches/",          # Hoofdmap
+  pattern = "\\.csv$",      # Zoek naar bestanden die eindigen op '.csv'
+  full.names = TRUE,        # Geef volledige paden terug
+  recursive = TRUE          # Inclusief submappen
+)
+
+# Step 2: read in all csvs
+data_list <- lapply(csv_files, function(file) {
+  data <- read.csv(file)  # Lees het bestand in
+  parent_dir <- basename(dirname(file))  # Haal de parent directory op
+  file_name <- basename(file)            # Haal de bestandsnaam op
+  data$file_source <- paste(parent_dir, file_name, sep = "/")  # Combineer parent directory en bestandsnaam
+  return(data)
+})
+
+# Stap 3: Combine to one dataframe
+travel_times <- do.call(rbind, data_list)
+
+# Step 4: per statistical sector, take the lowest
+lowest_duration_per_origin <- travel_times %>%
+  group_by(origin) %>%                          # Groepeer de data per 'origin'
+  filter(duration == min(duration, na.rm = TRUE)) %>% # Selecteer rijen met de minimale 'duration'
+  slice_head(n = 1) %>%  
+  ungroup()  
+```
+
+How many per rank?
+```{r}
+lowest_duration_per_origin %>% 
+  mutate(rank = str_remove(file_source, "/[^/]*$")) %>% 
+  tabyl(rank)
+```
+
+
+# 3. Visualisation
+
+```{r}
+map_df<-lowest_duration_per_origin %>% 
+  select(cd_sector= origin,
+         hospital=destination.ziekenhuis,
+         distance,
+         duration) %>% 
+  left_join(., ses, by='cd_sector') %>% 
+  left_join(., regios, by='cd_sector')  %>% 
+  left_join(., oppervlakte, by='cd_sector')
+
+viz_df<-map_df %>% 
+  drop_na(prop_65plussers, totaal, ms_median_net_taxable_inc)
+```
+
+
+
+
+## 3.0. p_0 -- hospital campuses
+
+```{r}
+p_0<-ggplot(emptymap, aes(geometry = geometry))+
+  geom_sf(aes(),   color="lightgrey", fill='white')+
+  geom_sf(data=emptymap_prov, aes(geometry=geometry), color='black', fill=NA)+
+  geom_sf(data = hospitals_sites,aes(geometry=geom), size = 0.5, color = "darkred", alpha=0.5) +
+  geom_sf(data = hospitals_sites,aes(geometry=geom), size = 0.25, color = "darkred") +
+  geom_sf_label_repel(data=emptymap_prov, aes(label = str_replace_all(t_provi_nl, "Provincie", "")))+
+coord_sf(datum = NA)+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank())+
+  theme(legend.title=element_blank())+
+  labs(x="", y="")
+```
+
+```{r}
+p_0
+
+ggsave("../output/p0_HospitalsMap.jpg",dpi=500, last_plot(), width =  50, height=25, unit="cm")
+```
+
+
+
+## 3.1. p_1 -- hospitals campuses and isochrones
+
+```{r}
+p_1 <- ggplot(emptymap, aes(geometry = geometry)) +
+
+  # Lege witte achtergrond
+  geom_sf(color = NA, fill = 'white') +
+
+  # Provinciegrenzen
+  geom_sf(data = emptymap_prov, aes(geometry = geometry), 
+          color = 'black', fill = NA) +
+
+  # Reistijd-isolijnen (900 sec = 15 min)
+  geom_sf(data = isolijnen_900, aes(geometry = geometry), 
+          fill = "steelblue", color = NA, alpha = 0.5, size = 0.25) +
+
+  # Ziekenhuizen
+  geom_sf(data = hospitals_sites, aes(geometry = geom), 
+          size = 0.75, color = "darkred") +
+
+  # Coördinaten en kaartinstellingen
+  coord_sf(datum = NA) +
+
+  # Thema
+  theme(
+    panel.grid.major   = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.border        = element_blank(),
+    panel.background    = element_blank(),
+    plot.title          = element_text(hjust = 0),
+    plot.margin         = margin(t = 0, r = 0, b = 0, l = 0)
+  )
+```
+
+
+```{r}
+p_1
+
+ggsave("../output/p1_Isochrones.jpg",dpi=500, last_plot(), width =  50, height=42, unit="cm")
+```
+
+
+## 3.2. p_2 -- travel time per statistical sector
+
+```{r}
+p_2 <- emptymap %>% 
+  left_join(map_df, by = "cd_sector") %>% 
+  mutate(duration_m = duration / 60) %>% 
+  ggplot(aes(geometry = geometry)) +
+
+  # Hoofdlaag met reistijd
+  geom_sf(aes(fill = duration_m), color = NA) +
+
+  # Provinciegrenzen
+  geom_sf(data = emptymap_prov, aes(geometry = geometry), 
+          size = 0.75, color = 'black', fill = NA) +
+
+  # Ziekenhuizen: transparante cirkels + centrumpunt
+  geom_sf(data = hospitals_sites, aes(geometry = geom), 
+          size = 0.75, color = "darkred", alpha = 0.30) +
+  geom_sf(data = hospitals_sites, aes(geometry = geom), 
+          size = 0.30, color = "darkred") +
+
+  # Kaartcoördinaten en achtergrond
+  coord_sf(datum = NA) +
+
+  # Thema-instellingen
+  theme(
+    panel.grid.major   = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.border        = element_blank(),
+    panel.background    = element_blank(),
+    plot.margin         = margin(t = 0, r = 0, b = 0, l = 0),
+    plot.title          = element_text(size = 18, face = "bold", 
+                                       margin = margin(t = 10), hjust = 0),
+    legend.background   = element_blank(),
+    legend.title        = element_text(size = 10, face = "plain", color = "gray10"),
+    legend.text         = element_text(size = 8),
+    plot.title.position = "plot"
+  ) +
+
+  # Kleurenschaal
+  scale_fill_viridis_c(direction = -1, option = "G") +
+
+  # Titel en legenda
+  labs(
+    title = "A. Welke reistijd<sup>a</sup> is er nodig om een ziekenhuis te bereiken?",
+    fill = "Reistijd (minuten)"
+  ) +
+
+  # Markdown voor titel
+  theme(plot.title = element_markdown())
+
+```
+
+```{r}
+p_2 
+
+ggsave("../output/p2_Choropleth.jpg",dpi=500, last_plot(), width =  50, height=25, unit="cm")
+```
+
+
+## 3.3. p_3 -- distribution travel times
+
+```{r}
+colors <- met.brewer(name = "Archambault", n = 3, type='discrete')
+kleurtjes <- c(colors[1], colors[3], colors[2])
+
+regiokes <- map_df %>% # group per region
+  select(plaats=t_regio_nl, duration, m_area_ha) %>% 
+  mutate(groep = "regios")
+
+provkes <- map_df %>% # group per province
+  drop_na(t_provi_nl) %>% 
+  mutate(prov_region = paste(t_regio_nl, t_provi_nl, sep = " - ")) %>%
+  select(plaats = prov_region,duration, m_area_ha) %>% 
+  mutate(groep = "provincies")
+
+descr_data <- rbind(regiokes, provkes) # combine regions and provinces
+
+descr_data<-descr_data %>% 
+  mutate(label = ifelse(
+    groep == "provincies", 
+    sub(".*Provincie", "", plaats),  # Verwijder alles voor en inclusief 'Provincies'
+    plaats),
+  groep = factor(groep, levels = c("regios", "provincies")),
+  regio = sub(" - .*", "", plaats),  # Verwijder alles voor de ' - ' in plaats
+  alpha_value = ifelse(groep == "provincies", 0.4, 1) )
+```
+
+
+```{r}
+p_3 <- descr_data %>%
+  mutate(duration_m = duration / 60) %>%
+
+  ggplot(
+    aes(
+      x = duration_m,
+      y = fct_reorder2(label, plaats, plaats),
+      fill = regio,
+      alpha = alpha_value
+    )
+  ) +
+
+  # Density-achtig element (met oppervlak als gewicht)
+  stat_halfeye(
+    justification = -0.2,
+    .width = 0,
+    point_colour = NA,
+    aes(weight = m_area_ha)
+  ) +
+
+  # Boxplot per regio/groep
+  geom_boxplot(
+    width = 0.12,
+    outlier.color = NA,
+    aes(color = groep, weight = m_area_ha),
+    show.legend = FALSE
+  ) +
+
+  # Thema
+  theme_ipsum(axis_text_size = 9, base_family = "sans") +
+
+  # Kleurenschaal op maat voor regio's
+  scale_fill_manual(
+    values = kleurtjes,
+    labels = function(x) str_wrap(x, width = 18)
+  ) +
+
+  # Kleuren voor lijnen van groepen
+  scale_color_manual(
+    values = c("regios" = "black", "provincies" = "darkgrey")
+  ) +
+
+  # Titel en labels
+  labs(
+    title = str_wrap("B. Van waaruit zijn ziekenhuizen<br>het best bereikbaar?", 30),
+    x = "Reistijd (minuten)",
+    y = NULL,
+    fill = NULL
+  ) +
+
+  # Alpha-transparantie
+  scale_alpha_continuous(range = c(0.3, 1)) +
+
+  # Legenda instellingen
+  guides(
+    alpha = "none",
+    fill = guide_legend(ncol = 3)
+  ) +
+
+  # Beperk x-as tot max 40 minuten
+  xlim(0, 40) +
+
+  # Legenda onderaan uitgelijnd naar links
+  theme(
+    legend.position = "bottom",
+    legend.justification = "left"
+  ) +
+
+  # Y-as labels afkappen voor betere leesbaarheid
+  scale_y_discrete(
+    labels = function(x) str_wrap(x, width = 15)
+  ) +
+
+  # Markdown voor titel
+  theme(
+    plot.title = element_markdown()
+  )
+```
+
+
+```{r}
+p_3 #standalone
+
+ggsave("../output/p3_Distribution regions.jpg",dpi=500, last_plot(), width =  25, height=50, unit="cm")
+```
+
+## 3.4. p_4 -- geom point - SES
+
+```{r}
+facet_labels <- c(
+  prop_65plussers = "Leeftijd (% 65-plussers)",
+  ms_median_net_taxable_inc = "Inkomen (mediaan belastbaar inkomen in euro)"
+)
+```
+
+```{r}
+p_4 <- viz_df %>%
+  select(
+    t_regio_nl, cd_sector, duration, m_area_ha,
+    prop_65plussers, 
+    ms_median_net_taxable_inc,
+    totaal
+  ) %>%
+  pivot_longer(
+    cols = c('prop_65plussers', "ms_median_net_taxable_inc")
+  ) %>%
+  mutate(duration_m = duration / 60) %>%
+
+  ggplot(aes(x = value, y = duration_m)) +
+
+  # Hexbin-achtergrond
+  geom_hex(bins = 40) +
+
+  # Witte regressielijn (op achtergrond)
+  geom_smooth(
+    aes(group = t_regio_nl, weight = totaal),
+    method = "lm",
+    se = FALSE,
+    linewidth = 1.75,
+    color = "white",
+    show.legend = FALSE
+  ) +
+
+  # Gekleurde regressielijn per regio
+  geom_smooth(
+    aes(color = t_regio_nl, weight = totaal),
+    method = "lm",
+    se = FALSE,
+    linewidth = 1.5,
+    show.legend = FALSE
+  ) +
+
+  # Basisthema
+  theme_ipsum(base_family = "sans") +
+
+  # Kleurenschaal
+  scale_color_manual(values = kleurtjes) +
+  scale_fill_viridis_c(option = "A") +
+
+  # Thema-aanpassingen voor strips, assen, legendas
+  theme(
+    strip.placement     = "outside",
+    strip.background    = element_blank(),
+    strip.text          = element_text(
+      family = "Arial Narrow",
+      size = 9,
+      face = "plain",
+      hjust = 1
+    ),
+    axis.title          = element_text(
+      family = "Arial Narrow",
+      size = 9,
+      face = "plain",
+      hjust = 1
+    ),
+    axis.text           = element_text(size = 11.5),
+    legend.title        = element_text(
+      size = 10,
+      face = "plain",
+      color = "gray10"
+    )
+  ) +
+
+  # Facetten met eigen labels en positie onderaan
+  facet_wrap(
+    vars(name),
+    scales = "free",
+    labeller = as_labeller(facet_labels),
+    strip.position = "bottom"
+  ) +
+
+  # Titel en labels
+  labs(
+    title = str_wrap("C. Voor wie zijn ziekenhuizen het best bereikbaar?", 80),
+    y = "Reistijd (minuten)",
+    x = "",
+    color = "Regio",
+    fill  = "Aantal statistische sectoren"
+  ) +
+
+  # Markdown voor titel
+  theme(
+    plot.title = element_markdown()
+  )
+
+```
+
+```{r}
+p_4
+
+ggsave("../output/p4_SES.jpg",dpi=500, last_plot(), width =  60, height=20, unit="cm")
+```
+
+
+## FINAL -- Combine the different plots
+
+```{r}
+# Tweak for combined plot
+p_2<-p_2+theme(legend.position = c(0.25, 0.15), legend.direction = "horizontal")+
+    guides(fill = guide_colorbar(title.position = "top", barwidth = 15))
+```
+
+```{r}
+# Tweak for combined plot
+p_3<-p_3+
+    labs(caption = '<br><br><sup>a</sup> Reistijd: de geschatte duur om een ziekenhuis te bereiken, met een personenwagen (vertrek om<br>10u, op een normale weekdag).<br><br>
+De eenheden in deze visualisatie zijn statistische sectoren. In onderdeel B wordt er gewogen voor<br>de oppervlakte van de statistische sectoren. Voor de regressielijnen in onderdeel C wordt er gewo-<br>gen aan de hand van het aantal inwoners van de statistische sectoren.<br><br>
+In onderdelen A en B worden alle statistische sectoren weergegeven (N = 19 795). In onderdeel C<br>worden alle statische sectoren weergegeven waarvan er informatie is voor zowel inkomen als leef-<br>tijd (N = 17 594).'
+) +
+theme(
+    plot.caption = element_markdown(
+      hjust = 0,                      # Links uitlijnen
+      margin = margin(t = 10, l = -70) # Voeg negatieve marge toe aan de linkerzijde
+    ),
+    legend.margin = margin(l = -90) 
+  )
+```
+
+```{r}
+# Tweak for combined plot
+p_4<-p_4+
+  guides(fill = guide_colorbar(title.position = "top", barwidth = 14))+
+  theme(
+    plot.margin = margin(t = 0, r = 0, b = 45, l = 10),
+    legend.direction = "horizontal", 
+    legend.position = c(0.10, -0.225))
+```
+
+
+```{r}
+library(ggpubr)
+combined_plot <- ggarrange(
+  ggarrange(p_2, p_4, ncol = 1, heights = c(2, 1.65)),  
+  p_3,                                                  
+  ncol = 2,                                             
+  widths = c(2, 1)
+)
+combined_plot
+
+
+```
+
+```{r}
+ggsave("../output/p_FullFigure_300.jpg", 
+       dpi = 300, 
+       plot = last_plot(), 
+       width = 32.5*1.5,    
+       height = 21*1.5,     
+       units = "cm")
+```
+
+```{r}
+ggsave("../output/p_FullFigure_600.jpg", 
+       dpi = 600, 
+       plot = last_plot(), 
+       width = 32.5*1.5,    
+       height = 21*1.5,     
+       units = "cm")
+```
+
+```{r}
+
+```
+
