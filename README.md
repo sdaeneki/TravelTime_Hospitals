@@ -13,7 +13,7 @@ If you use this repository or any of the code/materials, please cite the referen
 This folder contains all scripts necessary to prepare the data and reproduce the visualizations.
 
 - **`1. Preprocessing.qmd`** to prepare the input data and calculate the travel times.
-- **`2. Visualization.qmd`** suffices to reproduce all final figures (located in the `/d. Output` folder). You do not need to run the other scripts unless you want to replicate the full data processing (the estimation of the travel times takes a looooooooooong time).
+- **`2. Visualization.qmd`** suffices to reproduce all final figures (located in the `/d. Output` folder). You do not need to run the other script unless you want to replicate the full data processing (the estimation of the travel times takes a looooooooooong time).
 
 ### Summary of scripts
 
