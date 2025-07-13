@@ -10,10 +10,10 @@ If you use this repository or any of the code/materials, please cite the referen
 
 ## a. Code
 
-This folder contains the scripts necessary to prepare the data and reproduce the visualizations.
+This folder contains the quarto scripts (.qmd; written in R) necessary to prepare the data and reproduce the visualizations. 
 
 - **`1. Preprocessing.qmd`** to prepare the input data and calculate the travel times.
-- **`2. Visualization.qmd`** suffices to reproduce all final figures (located in the `/d. Output` folder). You do not need to run the other script unless you want to replicate the full data processing (the estimation of the travel times takes a looooooooooong time).
+- **`2. Visualization.qmd`** suffices to reproduce all final figures (located in the `/Output` folder). You do not need to run the other script unless you want to replicate the full data processing (the estimation of the travel times takes a looooooooooong time).
 
 ### Summary of scripts
 
@@ -25,7 +25,7 @@ This folder contains the scripts necessary to prepare the data and reproduce the
 - Generates the hospital–centroid matrix used for travel time calculation.  
 - Computes travel times between statistical sectors and hospitals based on the hospital-centroid matrix. For the calculation you need an API-key (cf. 'hereR'-package)  
 
-> Preprocessed outputs are saved in the `/b. Preprocessed` folder, and the calculated travel times are in `/b. Preprocessed/Batches`.  
+> Preprocessed outputs are saved in the `/Preprocessed` folder, and the calculated travel times are in `/Preprocessed/Batches`.  
 
 **`2. Visualization.qmd`**  
 - Reproduces all figures used in the publication.  
