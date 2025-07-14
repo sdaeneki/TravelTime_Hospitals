@@ -2,7 +2,7 @@
 # The (In)Accessibility of Hospitals in Belgium
 
 This repository contains replication material for the following publication:  
-**Daenekindt, Stijn (2025). De (On)Bereikbaarheid van Ziekenhuizen in België, *Tijdschrift Sociologie*, 6: 65–74.**  
+**Daenekindt, Stijn (2025). De (On)Bereikbaarheid van Ziekenhuizen in België, *Tijdschrift Sociologie*, 6: 65–75. doi: https://doi.org/10.38139/ts.94750**  
 
 If you use this repository or any of the code/materials, please cite the reference above.
 
